@@ -1,7 +1,7 @@
 # Please Read
 This is Doug Rosman's forked version of this repository.
 
-[Click here to open this notebook in Google Colab](https://colab.research.google.com/github/dougrosman/pix2pixHD/blob/main/pix2pixHD.ipynb)
+**[Click here to open this notebook in Google Colab](https://colab.research.google.com/github/dougrosman/pix2pixHD/blob/master/pix2pixHD.ipynb)**
 
 For a video tutorial going over how to use this Colab notebook, go here: [https://dougrosman.github.io/cvml-sp21/resources/pix2pixHD/](https://dougrosman.github.io/cvml-sp21/resources/pix2pixHD/)
 
