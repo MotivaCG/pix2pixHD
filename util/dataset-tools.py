@@ -1,4 +1,4 @@
-# This is a slightly modified version of Derrick Schultz' dataset-tools.py, for more dataset tools, visit Derrick's repo:
+# This is a slightly modified version of Derrick Schultz' dataset-tools.py, for more dataset tools, and tutorials for how to use them, visit Derrick's repo:
 # https://github.com/dvschultz/dataset-tools
 
 import argparse
