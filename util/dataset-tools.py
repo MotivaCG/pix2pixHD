@@ -1,3 +1,6 @@
+# This is a slightly modified version of Derrick Schultz' dataset-tools.py, for more dataset tools, visit Derrick's repo:
+# https://github.com/dvschultz/dataset-tools
+
 import argparse
 import numpy as np
 import scipy.ndimage as pyimg
