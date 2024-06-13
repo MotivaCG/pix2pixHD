@@ -110,7 +110,9 @@ class Pix2PixHDModel(BaseModel):
 
     def encode_input(self, label_map, inst_map=None, real_image=None, feat_map=None, infer=False):             
         if self.opt.label_nc == 0:
-            input_label = label_map.data.cuda()
+            input_label = label_map
+            if self.opt.gpu_ids[0] >= 0:
+                input_label = input_label.cuda()
         else:
             # create one-hot vector for label map 
             size = label_map.size()
@@ -298,7 +300,8 @@ class Pix2PixHDModel(BaseModel):
 
 class InferenceModel(Pix2PixHDModel):
     def forward(self, inp):
-        label, inst = inp
+        label = inp
+        inst = inp
         return self.inference(label, inst)
 
         
