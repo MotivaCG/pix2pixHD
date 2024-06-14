@@ -47,15 +47,15 @@ for i, data in enumerate(dataset):
     if opt.export_onnx:
         print ("Exporting to ONNX: ", opt.export_onnx)
         assert opt.export_onnx.endswith("onnx"), "Export model file should end with .onnx"
-
         label_tensor = torch.Tensor(data['label'])
-        
+        #inst_tensor = torch.Tensor(data['inst']).unsqueeze(0)
+
         torch.onnx.export(model, 
-                          label_tensor,  
+                          label_tensor, #(label_tensor, inst_tensor), 
                           opt.export_onnx, 
                           verbose=True, 
                           opset_version=11,
-                          input_names=['input_image'],
+                          input_names=['input_image'],# 'input_inst'],
                           output_names=['output_image'])
         exit(0)
     minibatch = 1 
@@ -68,6 +68,9 @@ for i, data in enumerate(dataset):
         
     visuals = OrderedDict([('input_label', util.tensor2label(data['label'][0], opt.label_nc)),
                            ('synthesized_image', util.tensor2im(generated.data[0]))])
+
+    print("inference completed!")   
+    print("Generated.data[0]:", generated.data[0].shape)
     img_path = data['path']
     print('process image... %s' % img_path)
     visualizer.save_images(webpage, visuals, img_path)
