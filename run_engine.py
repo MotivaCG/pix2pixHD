@@ -2,7 +2,6 @@ import os
 import sys
 from random import randint
 import numpy as np
-import tensorrt
 
 try:
     from PIL import Image
@@ -11,36 +10,31 @@ try:
     import pycuda.autoinit
     import argparse
 except ImportError as err:
-    sys.stderr.write("""ERROR: failed to import module ({})
-Please make sure you have pycuda and the example dependencies installed.
-https://wiki.tiker.net/PyCuda/Installation/Linux
-pip(3) install tensorrt[examples]
-""".format(err))
+    sys.stderr.write(f"ERROR: failed to import module ({err})\n"
+                     "Please make sure you have pycuda and the example dependencies installed.\n"
+                     "https://wiki.tiker.net/PyCuda/Installation/Linux\n"
+                     "pip(3) install tensorrt[examples]\n")
     exit(1)
 
 try:
     import tensorrt as trt
-    from tensorrt.parsers import caffeparser
-    from tensorrt.parsers import onnxparser    
+    try:
+        from tensorrt import OnnxParser as onnxparser
+        print("new onnx")
+    except ImportError as e:
+        from tensorrt.parsers import onnxparser   
+        print("classic onnx")
 except ImportError as err:
-    sys.stderr.write("""ERROR: failed to import module ({})
-Please make sure you have the TensorRT Library installed
-and accessible in your LD_LIBRARY_PATH
-""".format(err))
+    sys.stderr.write(f"ERROR: failed to import module ({err})\n"
+                     "Please make sure you have the TensorRT Library installed\n"
+                     "and accessible in your LD_LIBRARY_PATH\n")
     exit(1)
 
+print("Create logger!")
+G_LOGGER = trt.Logger(trt.Logger.Severity.INFO)
 
-G_LOGGER = trt.infer.ConsoleLogger(trt.infer.LogSeverity.INFO)
-
-class Profiler(trt.infer.Profiler):
-    """
-    Example Implimentation of a Profiler
-    Is identical to the Profiler class in trt.infer so it is possible
-    to just use that instead of implementing this if further
-    functionality is not needed
-    """
+class Profiler(trt.IProfiler):
     def __init__(self, timing_iter):
-        trt.infer.Profiler.__init__(self)
         self.timing_iterations = timing_iter
         self.profile = []
 
@@ -58,116 +52,148 @@ class Profiler(trt.infer.Profiler):
             totalTime += self.profile[i][1]
         print("Time over all layers: {:4.2f} ms per iteration".format(totalTime / self.timing_iterations))
 
-
 def get_input_output_names(trt_engine):
-    nbindings = trt_engine.get_nb_bindings();
+    
+    import tensorrt as trt
+    ntensors = trt_engine.num_io_tensors
     maps = []
 
-    for b in range(0, nbindings):
-        dims = trt_engine.get_binding_dimensions(b).to_DimsCHW()
-        name = trt_engine.get_binding_name(b)
-        type = trt_engine.get_binding_data_type(b)
+    for b in range(ntensors):
+        name = trt_engine.get_tensor_name(b)
+        dims = trt_engine.get_tensor_shape(name)
+        dtype = trt_engine.get_tensor_dtype(name)
         
-        if (trt_engine.binding_is_input(b)):
+        if trt_engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
             maps.append(name)
             print("Found input: ", name)
-        else:
+        elif trt_engine.get_tensor_mode(name) == trt.TensorIOMode.OUTPUT :
             maps.append(name)
             print("Found output: ", name)
 
-        print("shape=" + str(dims.C()) + " , " + str(dims.H()) + " , " + str(dims.W()))
-        print("dtype=" + str(type))
+        print("shape=", dims)
+        print("dtype=", dtype)
     return maps
 
-def create_memory(engine, name,  buf, mem, batchsize, inp, inp_idx):
-    binding_idx = engine.get_binding_index(name)
-    if binding_idx == -1:
-        raise AttributeError("Not a valid binding")
-    print("Binding: name={}, bindingIndex={}".format(name, str(binding_idx)))
-    dims = engine.get_binding_dimensions(binding_idx).to_DimsCHW()
-    eltCount = dims.C() * dims.H() * dims.W() * batchsize
 
-    if engine.binding_is_input(binding_idx):
+def get_tensor_index(engine, desiredName):
+    import tensorrt as trt
+    ntensors = engine.num_io_tensors
+    for b in range(ntensors):
+        name = engine.get_tensor_name(b)
+        if name == desiredName:
+            return b
+    return -1
+
+def create_memory(engine, name, buf, mem, batchsize, inp, inp_idx):
+    
+    import tensorrt as trt
+    print("create_memory for:"+name)
+    tensor_idx = get_tensor_index(engine, name)
+
+    if tensor_idx == -1:
+        raise AttributeError("Not a valid tensor id")
+    print("Tensor: name={}, tensor_idx={}".format(name, str(tensor_idx)))
+    dims = engine.get_tensor_shape(name)
+    eltCount = np.prod(dims) * batchsize
+
+    if engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
         h_mem = inp[inp_idx]
         inp_idx = inp_idx + 1
     else:
-        h_mem = np.random.uniform(0.0, 255.0, eltCount).astype(np.dtype('f4'))
+        h_mem = np.random.uniform(0.0, 255.0, eltCount).astype(np.float32)
 
     d_mem = cuda.mem_alloc(eltCount * 4)
     cuda.memcpy_htod(d_mem, h_mem)
-    buf.insert(binding_idx, int(d_mem))
+    buf.insert(tensor_idx, int(d_mem))
     mem.append(d_mem)
     return inp_idx
 
-
-#Run inference on device
 def time_inference(engine, batch_size, inp):
-    bindings = []
+    tensors = []
     mem = []
     inp_idx = 0
     for io in get_input_output_names(engine):
-        inp_idx = create_memory(engine, io,  bindings, mem,
-                                batch_size, inp, inp_idx)
+        inp_idx = create_memory(engine, io, tensors, mem, batch_size, inp, inp_idx)
 
     context = engine.create_execution_context()
     g_prof = Profiler(500)
-    context.set_profiler(g_prof)
-    for i in range(iter):
-        context.execute(batch_size, bindings)
+    context.profiler = g_prof
+    for _ in range(500):
+        context.execute_v2(tensors)
     g_prof.print_layer_times()
-    
-    context.destroy() 
-    return
-
 
 def convert_to_datatype(v):
-    if v==8:
-        return trt.infer.DataType.INT8
-    elif v==16:
-        return trt.infer.DataType.HALF
-    elif v==32:
-        return trt.infer.DataType.FLOAT
+    if v == 8:
+        return trt.DataType.INT8
+    elif v == 16:
+        return trt.DataType.HALF
+    elif v == 32:
+        return trt.DataType.FLOAT
     else:
         print("ERROR: Invalid model data type bit depth: " + str(v))
-        return trt.infer.DataType.INT8
+        return trt.DataType.INT8
 
-def run_trt_engine(engine_file, bs, it):
-    engine = trt.utils.load_engine(G_LOGGER, engine_file)
-    time_inference(engine, bs, it)
-
-def run_onnx(onnx_file, data_type, bs, inp):
-    # Create onnx_config
-    apex = onnxparser.create_onnxconfig()
-    apex.set_model_file_name(onnx_file)
-    apex.set_model_dtype(convert_to_datatype(data_type))
-
-     # create parser
-    trt_parser = onnxparser.create_onnxparser(apex)
-    assert(trt_parser)
-    data_type = apex.get_model_dtype()
-    onnx_filename = apex.get_model_file_name()
-    trt_parser.parse(onnx_filename, data_type)
-    trt_parser.report_parsing_info()
-    trt_parser.convert_to_trtnetwork()
-    trt_network = trt_parser.get_trtnetwork()
-    assert(trt_network)
-
-    # create infer builder
-    trt_builder = trt.infer.create_infer_builder(G_LOGGER)
-    trt_builder.set_max_batch_size(max_batch_size)
-    trt_builder.set_max_workspace_size(max_workspace_size)
-    
-    if (apex.get_model_dtype() == trt.infer.DataType_kHALF):
-        print("-------------------  Running FP16 -----------------------------")
-        trt_builder.set_half2_mode(True)
-    elif (apex.get_model_dtype() == trt.infer.DataType_kINT8): 
-        print("-------------------  Running INT8 -----------------------------")
-        trt_builder.set_int8_mode(True)
-    else:
-        print("-------------------  Running FP32 -----------------------------")
-        
-    print("----- Builder is Done -----")
-    print("----- Creating Engine -----")
-    trt_engine = trt_builder.build_cuda_engine(trt_network)
-    print("----- Engine is built -----")
+def run_trt_engine(engine_file, bs, inp):
+    with open(engine_file, "rb") as f:
+        runtime = trt.Runtime(G_LOGGER)
+        engine = runtime.deserialize_cuda_engine(f.read())
     time_inference(engine, bs, inp)
+
+def run_onnx_old(onnx_file, data_type, bs, inp):
+    builder = trt.Builder(G_LOGGER)
+    network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+    parser = onnxparser(network, G_LOGGER)
+
+    with open(onnx_file, 'rb') as model:
+        if not parser.parse(model.read()):
+            print("Failed to parse the ONNX file")
+            for error in range(parser.num_errors):
+                print(parser.get_error(error))
+            return
+
+    config = builder.create_builder_config()
+    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)  # 1 GB
+
+    if data_type == trt.DataType.HALF:
+        config.set_flag(trt.BuilderFlag.FP16)
+    elif data_type == trt.DataType.INT8:
+        config.set_flag(trt.BuilderFlag.INT8)
+
+    engine = builder.build_engine(network, config)
+    time_inference(engine, bs, inp)    
+
+def run_onnx(onnx_file, data_type, bs, inp_name):
+    print("onnx_file:" + onnx_file) 
+    import tensorrt as trt
+    G_LOGGER = trt.Logger(trt.Logger.WARNING)
+    builder = trt.Builder(G_LOGGER)
+    network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+    parser = trt.OnnxParser(network, G_LOGGER)
+
+    with open(onnx_file, 'rb') as model:
+        if not parser.parse(model.read()):
+            print("Failed to parse the ONNX file")
+            for error in range(parser.num_errors):
+                print(parser.get_error(error))
+            return
+
+    config = builder.create_builder_config()
+    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)  # 1 GB
+
+    if data_type == trt.DataType.HALF:
+        config.set_flag(trt.BuilderFlag.FP16)
+    elif data_type == trt.DataType.INT8:
+        config.set_flag(trt.BuilderFlag.INT8)
+
+    # Use the new method to build the engine
+    serialized_engine = builder.build_serialized_network(network, config)
+    if not serialized_engine:
+        print("Failed to build serialized engine")
+        return
+
+    runtime = trt.Runtime(G_LOGGER)
+    engine = runtime.deserialize_cuda_engine(serialized_engine)
+    
+    # Assuming you have a time_inference function that can use this engine and the name of the input tensor
+    time_inference(engine, bs, inp_name)
+
